@@ -1,4 +1,6 @@
 include("ca.jl")
+using .CellularAutomata
+using DelimitedFiles
 
 function runSimulations()
     # Parameters
@@ -37,7 +39,6 @@ function runSimulations()
         end
     end
 end
-
 function runSimulations2()
     # Parameters
     landscapes = ("LLM","LMS","LLS","LMM","LSS")
@@ -79,4 +80,64 @@ function runSimulations2()
         end
     end
 end
-runSimulations2()
+function rescale(x,newMin,newMax)
+    return (newMax-newMin).*((x.-minimum(x))./(maximum(x)-minimum(x))).+newMin
+end
+function rescale(x,newMin,newMax,oldMin,oldMax)
+    return (newMax-newMin).*((x.-oldMin)./(oldMax-oldMin)).+newMin
+end
+function testParams()
+    scaleMax = [0.9,0.7,0.6]
+    nDisp = [5,2]
+    survWeight = [0.5,1.0,1.5]
+    meanDisp = [1.0,5.0]
+    dispProb = [0.8,0.6]
+    for scalem in scaleMax
+        suit = readdlm("D:/PHDExperimentOutputs/Transferability/landscapes/suitability/suitability238.asc",skipstart=6)
+        suit = rescale(suit,0,scalem,0,1)
+        for maxDis in nDisp
+            for weight in survWeight
+                for mdis in meanDisp
+                    for dp in dispProb
+                        for i in 1:10
+                            simName = "sim_"*string(scalem)*"_"*string(maxDis)*"_"*string(weight)*"_"*string(mdis)*"_"*string(dp)*"_rep"*string(i)
+                            pa = ones(400,400)
+                            paIdx = CartesianIndices(pa)
+                            ca = OccurenceCellularAutomata(pa,paIdx,suit,dp,maxDis,weight,weight,mdis)
+                            for j in 1:100
+                                coloniseNeighbourWeight(ca)
+                                extinctionNeighbour(ca)
+                            end
+                            open("D:/PHDExperimentOutputs/Transferability/ca_tuning/r1/"*simName*".asc","w") do io
+                                write(io,"NCOLS 400\nNROWS 400\nXLLCORNER 0\nYLLCORNER 0\nCELLSIZE 100\nNODATA_value -9999\n")
+                                writedlm(io,pa)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+function testParams2()
+    survWeight = [0.2,0.5,0.7,1.0,1.5,2.0]
+    suit = readdlm("D:/PHDExperimentOutputs/Transferability/landscapes/suitability/suitability238.asc",skipstart=6)
+    suit = rescale(suit,0,0.8,0,1)
+    for sweight in survWeight
+        for i in 1:10
+            simName = "sim_"*string(sweight)*"_rep"*string(i)
+            pa = ones(400,400)
+            paIdx = CartesianIndices(pa)
+            ca = OccurenceCellularAutomata(pa,paIdx,suit,0.7,2,sweight,sweight,3.0)
+            for j in 1:100
+                coloniseNeighbourWeight(ca)
+                extinctionNeighbour(ca)
+            end
+            open("D:/PHDExperimentOutputs/Transferability/ca_tuning/r3/"*simName*".asc","w") do io
+                write(io,"NCOLS 400\nNROWS 400\nXLLCORNER 0\nYLLCORNER 0\nCELLSIZE 100\nNODATA_value -9999\n")
+                writedlm(io,pa)
+            end
+        end
+    end
+end
+testParams2()
