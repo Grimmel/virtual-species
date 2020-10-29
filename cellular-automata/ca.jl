@@ -13,15 +13,17 @@ struct OccurenceCellularAutomata
     dispersalProbability::Float64
     maxNumberDispersers::Int64
     neighbourSurvivalWeight::Float64
-    neighbourDispersalMultiplier::Float64
+    neighbourDispersalWeight::Float64
     meanDispersal::Float64
 end
 
 
 function newPos(meanDistance,cartIdx)
     distance = rand(Exponential(meanDistance),1)
-    # + 1 ensures dispersal outside of the initial cell
-    distance = distance[1] + 0.75
+    # Distance needs to be a cell outside current cell.
+    # Distance from centre of current cell to adject, compated to diagonal
+    # is 1/2^-2 (approx 0.7071).Adding 1 would bias towards the diagonals.
+    distance = distance[1]+0.7071
     angle = 360.0*rand()
     # Remember 1 = y, 2 = x
     x = Int(round(cos(deg2rad(angle))*distance,digits=0)) + cartIdx[2]
@@ -115,21 +117,16 @@ julia> bar([1, 2], [1, 2])
 function coloniseNeighbourWeight(ca::OccurenceCellularAutomata)
     shape = size(ca.pa)
     dCells = selectProportion(ca.pa,ca.pa_cart_index,ca.dispersalProbability)
+    # Random shuffle to avoid grid index bias due to order of applying this function
     idxShuffle = sample(collect(1:1:length(dCells)),length(dCells),replace=false)
     for i in idxShuffle
         cellIndex = dCells[i]
         neighbourWeight = neighbourHoodWeight(ca.pa,ca.suitability,cellIndex,shape)
+        dispWeight = neighbourWeight * ca.neighbourDispersalWeight
         # Determine maximum number of dispersers scaled by suitabiility
-        maxNumDispersers = ceil(ca.maxNumberDispersers*ca.suitability[i] * (1+(neighbourWeight * ca.neighbourDispersalMultiplier)),digits=0)
-        potentialDispersers = collect(0:1:maxNumDispersers)
-        # Weights are the inveverse of number of dispersers,
-        # normalised to sum to 1
-        sampleWeights = potentialDispersers.^-1
-        replace!(sampleWeights,Inf=>0)
-        # Ensure 0 number of dispersers are weighted equal to 1-dispersal_prob
-        sampleWeights[1] = sum(sampleWeights/ca.dispersalProbability) * (1-ca.dispersalProbability)
-        sampleWeights = sampleWeights./sum(sampleWeights)
-        numberDispersers = sample(potentialDispersers,ProbabilityWeights(sampleWeights))
+        dispersalMultiplier = 1/(1+MathConstants.e^(-10*(ca.suitability[cellIndex]-(1-dispWeight))))
+        maxNumDispersers = (ca.suitability[cellIndex] + (1-ca.suitability[cellIndex])*dispersalMultiplier)*ca.maxNumberDispersers
+        numberDispersers = rand(Poisson(maxNumDispersers))
         for j in 1:numberDispersers
             newXY = newPos(ca.meanDispersal,cellIndex)
             if newXY[2]>=1 && newXY[2] <= shape[2] && newXY[1] >=1 && newXY[1]<=shape[1]
@@ -138,8 +135,27 @@ function coloniseNeighbourWeight(ca::OccurenceCellularAutomata)
         end
     end
 end
-
-function neighbourHoodWeight(pa,suit,idx,shape)
+function neighbourHoodWeight(pa,suit,idx,shape,weightMatrix,r)
+    # Assumes square neighbourhood
+    ymin = idx[1]-r
+    ymax = idx[1]+r
+    xmin = idx[2]-r
+    xmax = idx[2]+r
+    idxYMin = 1
+    idxYMax = 1+2*r
+    idxXMin = 1
+    idxXMax = 1+2*r
+    # Check boundary conditions
+    if ymin <= 0; ymin = 1,idxYMin = 2*r-idx[1] end
+    if ymax > shape[1]; ymax = shape[1],idxYMax = (r+1)+shape[1]-idx[1] end
+    if xmin <= 0; xmin = 1,idxXMin = 2*r-idx[2] end
+    if xmax > shape[2]; xmax = shape[2], idxYMax = (r+1)+shape[2]-idx[2] end
+    oc = vec(pa[ymin:ymax,xmin:xmax])
+    su = vec(suit[ymin:ymax,xmin:xmax])
+    weight = oc.*su.*vec(weightMatrix)
+    weight = weight - (pa[idx]*suit[idx]*weightMatrix[(r+1,r+1)])
+end
+function neighbourHoodWeight2(pa,suit,idx,shape)
     # Define 3x3 neighbourhood boundaries
     ymin = idx[1]-1
     ymax = idx[1]+1
@@ -167,6 +183,7 @@ function neighbourHoodWeight(pa,suit,idx,shape)
     pctColonised = (pctColonised-(pa[idx]*suit[idx]))/8
     return pctColonised
 end
+
 
 function extinction(ca::OccurenceCellularAutomata)
     for idx in ca.pa_cart_index
