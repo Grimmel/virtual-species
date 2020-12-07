@@ -3,10 +3,20 @@ using Distributions
 using Random
 using StatsBase
 
-export colonise,coloniseMultiple,coloniseNeighbourWeight,extinction,extinctionNeighbourWeight,OccurenceCellularAutomata
+export colonise,coloniseSuitWeight,coloniseNeighbourWeight,extinction,extinctionNeighbourWeight,OccurenceCellularAutomata,OccurrenceCellularAutomataNB
 
-
-struct OccurenceCellularAutomata
+# struct DispersalParams
+#     meanDispersal::Float64
+#     dispersalProbability::Float64
+#     maxNumberDispersers::Int64
+# end
+# struct NeighbourhoodParams
+#     neighbourSurvivalWeight::Float64
+#     neighbourDispersalWeight::Float64
+#     neighbourWeightMatrix::Matrix{Float64}
+#     r::Int64
+# end
+mutable struct OccurrenceCellularAutomataNB
     pa::Matrix{Float64}
     pa_cart_index::Matrix{CartesianIndex{2}}
     suitability::Matrix{Float64}
@@ -19,7 +29,15 @@ struct OccurenceCellularAutomata
     neighbourDispersalWeight::Float64
     neighbourWeightMatrix::Matrix{Float64}
     r::Int64
-
+end
+mutable struct OccurrenceCellularAutomata
+    pa::Matrix{Float64}
+    pa_cart_index::Matrix{CartesianIndex{2}}
+    suitability::Matrix{Float64}
+    # Dispersal parameters
+    meanDispersal::Float64
+    dispersalProbability::Float64
+    maxNumberDispersers::Int64
 end
 
 """
@@ -38,8 +56,8 @@ Note: The selected distance as a constant added to it in order to ensure a
       diagonals and lower values will result in selection of the starting position.
 
 """
-function newPos(meanDistance::Float64,startPos::CartesianIndex)
-    distance = rand(Exponential(meanDistance),1)
+function newPos(meanDistance::Float64,startPos::CartesianIndex,rng)
+    distance = rand(rng,Exponential(meanDistance),1)
     # Add constant to ensure selection of pos outside current cell.
     distance = distance[1]+0.7071
     angle = 360.0*rand()
@@ -57,7 +75,7 @@ the next time step. The number of dispersers is determined stochastically
 by sampling from a binomial distribution.
 
 """
-function selectProportion(pa,caIndex,dispersalProbability)
+function selectProportion(pa::Matrix{Float64},caIndex::Array{CartesianIndex{2},2},probability::Float64)
     nPresences = Int(sum(pa))
     total = Array{CartesianIndex}(undef, nPresences)
     counter = 1
@@ -68,7 +86,7 @@ function selectProportion(pa,caIndex,dispersalProbability)
         end
 
     end
-    dispersers = sample(total,rand(Binomial(nPresences,dispersalProbability)))
+    dispersers = sample(total,rand(Binomial(nPresences,probability)))
 end
 """
     neighbourHoodWeight(ca)
@@ -115,11 +133,12 @@ end
 Select a single cell to colonise
 
 """
-function colonise(ca::OccurenceCellularAutomata)
+function colonise(ca::OccurrenceCellularAutomata)
+    rng = MersenneTwister()
     shape = size(ca.pa)
     dCells = selectProportion(ca.pa,ca.pa_cart_index,ca.dispersalProbability)
     for i in dCells
-        newXY = newPos(ca.meanDispersal,i)
+        newXY = newPos(ca.meanDispersal,i,rng)
         if newXY[2]>=1 && newXY[2] <= shape[2] && newXY[1] >=1 && newXY[1]<=shape[1]
             ca.pa[newXY[1],newXY[2]] = 1.0
         end
@@ -135,23 +154,20 @@ has
 
 
 """
-function coloniseSuitWeight(ca::OccurenceCellularAutomata)
+function coloniseSuitWeight(ca::OccurrenceCellularAutomata)
+    rng = MersenneTwister()
     shape = size(ca.pa)
     dCells = selectProportion(ca.pa,ca.pa_cart_index,ca.dispersalProbability)
     for i in dCells
         # Determine maximum number of dispersers scaled by suitabiility
-        maxNumDispersers = ceil(ca.maxNumberDispersers*ca.suitability[i],digits=0)
-        potentialDispersers = collect(1:1:maxNumDispersers)
-        # Weights are the inveverse of number of dispersers,
-        # normalised to sum to 1
-        sampleWeights = potentialDispersers.^-1
-        replace!(sampleWeights,Inf=>0)
-        sampleWeights = sampleWeights./sum(sampleWeights)
-        numberDispersers = sample(potentialDispersers,ProbabilityWeights(sampleWeights))
-        for j in 1:numberDispersers
-            newXY = newPos(ca.meanDispersal,cellIndex)
-            if newXY[2]>=1 && newXY[2] <= shape[2] && newXY[1] >=1 && newXY[1]<=shape[1]
-                ca.pa[newXY[1],newXY[2]] = 1.0
+        meanNumDispersers = ca.maxNumberDispersers*ca.suitability[i]
+        if meanNumDispersers > 0.0
+            numberDispersers = rand(rng,Poisson(meanNumDispersers))
+            for j in 1:numberDispersers
+                newXY = newPos(ca.meanDispersal,i,rng)
+                if newXY[2]>=1 && newXY[2] <= shape[2] && newXY[1] >=1 && newXY[1]<=shape[1]
+                    ca.pa[newXY[1],newXY[2]] = 1.0
+                end
             end
         end
     end
@@ -172,7 +188,8 @@ Note: As this is neighbour weighted, the order of cells are randomised to preven
       neighbourhood weights. This would effectively make the neighbourhood effects
       synchronus (i.e. all processes happen at the same time, instantly).
 """
-function coloniseNeighbourWeight(ca::OccurenceCellularAutomata)
+function coloniseNeighbourWeight(ca::OccurrenceCellularAutomataNB)
+    rng = MersenneTwister()
     shp = size(ca.pa)
     dCells = selectProportion(ca.pa,ca.pa_cart_index,ca.dispersalProbability)
     # Random shuffle to avoid grid index bias due to order of applying this function
@@ -184,9 +201,10 @@ function coloniseNeighbourWeight(ca::OccurenceCellularAutomata)
         # Determine maximum number of dispersers scaled by suitabiility
         dispersalMultiplier = 1/(1+MathConstants.e^(-10*(ca.suitability[cellIndex]-(1-dispWeight))))
         meanNumDispersers = (ca.suitability[cellIndex] + (1-ca.suitability[cellIndex])*dispersalMultiplier)*ca.maxNumberDispersers
-        numberDispersers = rand(Poisson(meanNumDispersers))
+
+        numberDispersers = rand(rng,Poisson(meanNumDispersers))
         for j in 1:numberDispersers
-            newXY = newPos(ca.meanDispersal,cellIndex)
+            newXY = newPos(ca.meanDispersal,cellIndex,rng)
             if newXY[2]>=1 && newXY[2] <= shp[2] && newXY[1] >=1 && newXY[1]<=shp[1]
                 ca.pa[newXY[1],newXY[2]] = 1.0
             end
@@ -195,10 +213,11 @@ function coloniseNeighbourWeight(ca::OccurenceCellularAutomata)
 end
 
 
-function extinction(ca::OccurenceCellularAutomata)
+function extinction(ca::OccurrenceCellularAutomata)
+    rng = MersenneTwister()
     for idx in ca.pa_cart_index
         if ca.pa[idx] === 1.0
-            survived = rand(Bernoulli(ca.suitability[idx]),1)
+            survived = rand(rng,Bernoulli(ca.suitability[idx]),1)
             if survived[1] == false
                 ca.pa[idx] = 0
             end
@@ -218,7 +237,8 @@ Note: As this is neighbour weighted, the order of cells are randomised to preven
       neighbourhood weights. This would effectively make the neighbourhood effects
       synchronus (i.e. all processes happen at the same time, instantly).
 """
-function extinctionNeighbourWeight(ca::OccurenceCellularAutomata)
+function extinctionNeighbourWeight(ca::OccurrenceCellularAutomataNB)
+    rng = MersenneTwister()
     # Randomise cell index to prevent bias from the neighbourhood weighting
     # Alternative could be to copy the the pa array.
     shp = size(ca.pa)
@@ -234,7 +254,7 @@ function extinctionNeighbourWeight(ca::OccurenceCellularAutomata)
             sf = 1/(1+MathConstants.e^(-10*(ca.suitability[cellIndex]-(1-survWeight))))
             survivalProbability = ca.suitability[cellIndex] + (1-ca.suitability[cellIndex])*sf
             # Determine survival
-            survived = sample([0,1],ProbabilityWeights([1.0-survivalProbability,survivalProbability]))
+            survived = sample(rng,[0,1],ProbabilityWeights([1.0-survivalProbability,survivalProbability]))
             if survived === 0
                 ca.pa[cellIndex] = 0
             end
